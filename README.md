@@ -1,71 +1,95 @@
 # Awa sa ni, magamit ni nimo!
 
-Use PuTTY for SSH and WinSCP for file transfers.
+> Apache + PHP-FPM + MariaDB + Cloudflare SAFE  
+> Tools: **PuTTY** for SSH · **WinSCP** for file transfers
 
-## Note — root workflow
-This guide assumes you run commands as root (ssh root@your_server_ip). Running as root is convenient for setup but has security risks; consider creating a non-root sudo user after setup.
+---
 
-## Nano Shortcut keys
-- Save = CTRL + O, then press Enter.
-- EXIT = CTRL + X
+## ⚠️ Important Rules (Read First)
 
-## Quick commands
-- restart apache = systemctl restart apache2
-- restart mariadb = systemctl restart mariadb
-- check your server basin luoy na kayo - htop
+- **NEVER** use Cloudflare Page Rules for domain redirects
+- **NEVER** enable Cloudflare "Full (Strict)" before SSL is installed
+- **ALWAYS** verify DNS before running Certbot
+- **ALWAYS** ensure PHP-FPM is installed and linked to Apache
+- Avoid multiple redirect sources (`.htaccess` + Cloudflare + WordPress)
 
-## 1. Connect to DigitalOcean Droplet
+---
+
+## 🧠 Root Workflow
+
+This guide assumes root access:
+
 ```bash
 ssh root@your_server_ip
 ```
 
-## 2. Update Server
+> **Nano shortcuts:** Save: `CTRL + O` → Enter · Exit: `CTRL + X`
+
+---
+
+## Step 1 — Update Server
+
 ```bash
 apt update && apt upgrade -y
 ```
 
-## 3. Install Apache
+---
+
+## Step 2 — Install Apache
+
 ```bash
 apt install -y apache2
-systemctl status apache2
+systemctl enable apache2
+systemctl start apache2
 ```
-Open your browser to verify:
-http://your-ip-address
 
-## 4. Install MariaDB
+Test by visiting `http://your-server-ip` in a browser.
+
+---
+
+## Step 3 — Install MariaDB
+
 ```bash
 apt install -y mariadb-server mariadb-client
 mysql_secure_installation
 ```
-Follow the interactive prompts (choose recommended answers). If MariaDB uses socket auth, you may not need a password for root.
 
-or 
+Recommended answers during setup:
 
-- Skip changing your password, if you have a strong password type "n"
-- Remove anonymous users type "y"
-- Next, disallow remote root login to prevent hackers from accessing your database type "n"
-- Remove test database type "y"
-- Finally, reload database type "y"
+- ✅ Set root password
+- ✅ Remove anonymous users
+- ✅ Disallow remote root login
+- ✅ Remove test database
+- ✅ Reload privileges
 
-## 5. Install PHP (common modules for WordPress)
+---
+
+## Step 4 — Install PHP 8.2 + PHP-FPM ⚠️ IMPORTANT
+
 ```bash
-apt install -y php php-mysql php-xml php-mbstring php-curl php-gd php-zip unzip
+apt install -y php8.2 php8.2-mysql php8.2-xml php8.2-mbstring \
+  php8.2-curl php8.2-gd php8.2-zip unzip
+apt install -y php8.2-fpm
+systemctl enable php8.2-fpm
+systemctl start php8.2-fpm
 ```
-Create a PHP info file to verify:
-```bash
-cat > /var/www/html/info.php <<'EOF'
-<?php
-phpinfo();
-?>
-EOF
-```
-Visit: http://your-ip-address/info.php
 
-## 6. Create Database
+### Enable Apache PHP-FPM Bridge (CRITICAL)
+
+```bash
+a2enmod proxy_fcgi setenvif rewrite
+a2enconf php8.2-fpm
+systemctl restart apache2
+```
+
+---
+
+## Step 5 — Create Database
+
 ```bash
 mysql -u root -p
 ```
-SQL (run inside mysql client):
+
 ```sql
 CREATE DATABASE sample_db;
 CREATE USER 'wp_user'@'localhost' IDENTIFIED BY 'strong_password';
@@ -74,85 +98,175 @@ FLUSH PRIVILEGES;
 EXIT;
 ```
 
-## 6.1 Import Database (optional)
-```bash
-mysql -u root -p sample_db < /var/www/html/your-folder/local.sql
-```
+---
 
-## 7. Deploy WordPress to /var/www/html/your-folder
-Upload and extract WordPress (example):
+## Step 6 — Deploy WordPress
+
 ```bash
 cd /var/www/html
-unzip /path/to/wordpress.zip -d your-folder
+unzip wordpress.zip -d your-folder
 ```
-Set ownership and permissions:
+
+Set correct permissions:
+
 ```bash
 chown -R www-data:www-data /var/www/html/your-folder
 find /var/www/html/your-folder -type d -exec chmod 755 {} \;
 find /var/www/html/your-folder -type f -exec chmod 644 {} \;
 ```
-Configure wp-config.php (edit with vim/nano or WinSCP):
+
+---
+
+## Step 7 — Configure wp-config.php
+
 ```php
-define( 'DB_NAME', 'sample_db' );
-define( 'DB_USER', 'wp_user' );
-define( 'DB_PASSWORD', 'strong_password' );
-define( 'DB_HOST', 'localhost' );
+define('DB_NAME',     'sample_db');
+define('DB_USER',     'wp_user');
+define('DB_PASSWORD', 'strong_password');
+define('DB_HOST',     'localhost');
 ```
 
-## 8. Update WordPress URLs (if migrating)
-```bash
-mysql -u root -p
-USE sample_db;
-UPDATE wp_options SET option_value = 'https://yourdomain.com' WHERE option_name IN ('siteurl','home');
-UPDATE wp_posts SET post_content = REPLACE(post_content, 'http://old_ip/wp-content/uploads', 'https://yourdomain.com/wp-content/uploads');
-EXIT;
-```
+---
 
-## 9. DNS & SSL
-- Add A records for @ and www pointing to your server IP.
-- For SSL with certbot:
-```bash
-apt install -y certbot python3-certbot-apache
-certbot --apache -d yourdomain.com -d www.yourdomain.com
-systemctl restart apache2
-```
-If using Cloudflare, set SSL/TLS mode to Full (or Full (strict) if you have a proper cert).
+## Step 8 — Apache Virtual Host
 
-## 10. Apache virtual host
-Create site file:
 ```bash
 cat > /etc/apache2/sites-available/yourdomain.conf <<'EOF'
 <VirtualHost *:80>
     ServerName yourdomain.com
     ServerAlias www.yourdomain.com
+
     DocumentRoot /var/www/html/your-folder
 
     <Directory /var/www/html/your-folder>
         AllowOverride All
         Require all granted
     </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
 </VirtualHost>
 EOF
 ```
-Enable and restart:
+
+Enable the site and disable the default:
+
 ```bash
 a2ensite yourdomain.conf
-a2enmod rewrite
-systemctl restart apache2
+a2dissite 000-default.conf
+systemctl reload apache2
 ```
 
-## 11. Post-setup recommendations
-- Consider enabling UFW and only allowing necessary ports (22, 80, 443).
-- Remove info.php after verifying PHP.
-- Regularly back up the database and wp-content.
-- After setup, create a non-root sudo user and disable root SSH if security is a priority.
+---
 
-## Troubleshooting & logs
-- Apache: /var/log/apache2/error.log
-- MariaDB: journalctl -u mariadb
-- Common permission fix:
+## Step 9 — DNS Check (CRITICAL — Do This Before SSL)
+
 ```bash
-chown -R www-data:www-data /var/www/html/your-folder
+dig yourdomain.com +short
+dig www.yourdomain.com +short
 ```
+
+> ✅ Both must resolve to your server's IP address before proceeding.
+
+---
+
+## Step 10 — SSL Setup (Let's Encrypt)
+
+Install Certbot:
+
+```bash
+apt install -y certbot python3-certbot-apache
+```
+
+**Before running Certbot, confirm:**
+- Cloudflare SSL is set to **Full** (NOT Strict)
+- DNS is pointing correctly
+- No redirect rules to other domains
+
+Run Certbot:
+
+```bash
+certbot --apache -d yourdomain.com -d www.yourdomain.com
+```
+
+When prompted, choose: **Redirect HTTP to HTTPS → YES**
+
+---
+
+## Step 11 — After SSL Success
+
+In Cloudflare, change SSL/TLS mode to:
+
+> **Full (Strict)** ✅
+
+---
+
+## Step 12 — Update WordPress URLs (HTTPS Fix)
+
+```sql
+UPDATE wp_options
+SET option_value = 'https://yourdomain.com'
+WHERE option_name IN ('siteurl', 'home');
+```
+
+---
+
+## Step 13 — Troubleshooting
+
+**Check service status:**
+
+```bash
+systemctl status apache2
+systemctl status php8.2-fpm
+```
+
+**Check open ports:**
+
+```bash
+ss -tlnp | grep :80
+ss -tlnp | grep :443
+```
+
+**Watch error logs:**
+
+```bash
+tail -f /var/log/apache2/error.log
+```
+
+---
+
+## ⚡ Common Mistakes to Avoid
+
+- ❌ **Cloudflare Page Rules for redirects**
+  - 💥 Conflicts with Apache/WordPress redirects
+  - ✅ Use `.htaccess` or WordPress settings only
+
+- ❌ **Enabling Full (Strict) before SSL install**
+  - 💥 SSL handshake errors
+  - ✅ Set to **Full** first, switch to **Full (Strict)** after Certbot
+
+- ❌ **Missing PHP-FPM bridge (`a2enconf php8.2-fpm`)**
+  - 💥 PHP pages won't render
+  - ✅ Run `a2enconf php8.2-fpm` then restart Apache
+
+- ❌ **Wrong WordPress URL (http vs https mismatch)**
+  - 💥 Redirect loops
+  - ✅ Update `siteurl` and `home` in `wp_options` via SQL
+
+- ❌ **Multiple redirect layers (.htaccess + WP + Cloudflare)**
+  - 💥 Infinite redirect loops
+  - ✅ Pick one redirect source and disable the rest
+
+---
+
+## ✅ Final Result (After Correct Setup)
+
+- [x] Apache running
+- [x] PHP-FPM connected
+- [x] MariaDB running
+- [x] SSL active (Let's Encrypt)
+- [x] Cloudflare Full (Strict) enabled
+- [x] No redirect loops
+- [x] Stable WordPress deployment
 
 [kung nag lisod ka anhi lang dri or e chatgpt, HAHA](https://www.digitalocean.com/community/tutorials/install-wordpress-on-ubuntu)
